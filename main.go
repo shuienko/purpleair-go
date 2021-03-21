@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/mrflynn/go-aqi"
+	"github.com/patrickmn/go-cache"
 	tb "gopkg.in/tucnak/telebot.v2"
 	"io/ioutil"
 	"log"
@@ -14,9 +15,15 @@ import (
 )
 
 const (
-	ApiBaseURL = "https://www.purpleair.com/json?show="
-	SensorID   = "49489"
-	GetAQIText = "Якість повітря 😷"
+	ApiBaseURL      = "https://www.purpleair.com/json?show="
+	SensorID        = "49489"
+	GetAQIText      = "Якість повітря 😷"
+	CacheExpiration = time.Minute * 2
+	CacheClenup     = CacheExpiration * 10
+)
+
+var (
+	c = cache.New(CacheExpiration, CacheClenup)
 )
 
 type SensorData struct {
@@ -217,8 +224,25 @@ func FtoC(f string) string {
 	return fmt.Sprintf("%f", tempC)
 }
 
-func main() {
+// Compose response message using cache
+func ComposeTgMessage() string {
+	var cacheData interface{}
 	var data SensorData
+
+	cacheData, _ = c.Get("sensorData")
+	if cacheData != nil {
+		data = cacheData.(SensorData) // Use cache if not empty
+		fmt.Println("Using cache")
+		return data.PrintTg()
+	} else {
+		data.Init(makeAPICall()) // If cache is empty the make HTTP call
+		fmt.Println("Making HTTP call")
+		c.Set("sensorData", data, CacheExpiration) // Set cache
+		return data.PrintTg()
+	}
+}
+
+func main() {
 
 	// Create new bot entity
 	b, err := tb.NewBot(tb.Settings{
@@ -243,8 +267,7 @@ func main() {
 
 	// Handle /start command
 	b.Handle("/start", func(m *tb.Message) {
-		data.Init(makeAPICall())
-		_, err = b.Send(m.Sender, data.PrintTg(), options)
+		_, err = b.Send(m.Sender, ComposeTgMessage(), options)
 		if err != nil {
 			log.Println(err)
 		}
@@ -252,8 +275,7 @@ func main() {
 
 	// Handle button
 	b.Handle(&btnGetAQI, func(m *tb.Message) {
-		data.Init(makeAPICall())
-		_, err = b.Send(m.Sender, data.PrintTg(), options)
+		_, err = b.Send(m.Sender, ComposeTgMessage(), options)
 		if err != nil {
 			log.Println(err)
 		}
