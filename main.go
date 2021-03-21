@@ -19,11 +19,11 @@ const (
 	SensorID        = "49489"
 	GetAQIText      = "Якість повітря 😷"
 	CacheExpiration = time.Minute * 2
-	CacheClenup     = CacheExpiration * 10
+	CacheCleanup    = CacheExpiration * 10
 )
 
 var (
-	c = cache.New(CacheExpiration, CacheClenup)
+	c = cache.New(CacheExpiration, CacheCleanup)
 )
 
 type SensorData struct {
@@ -46,15 +46,6 @@ func (s *SensorData) Init(api ApiResponse) {
 	s.Humidity = api.Results[0].Humidity
 	s.Pressure = api.Results[0].Pressure
 	s.Uptime = api.Results[0].Uptime
-}
-
-// Prints out Sensor Data to CLI
-func (s *SensorData) PrintCli() {
-	fmt.Printf("Purple Air Sensor #%s data:\n", SensorID)
-	fmt.Printf("- AQI: %.0f (%s)\n", s.AQI, s.AQIName)
-	fmt.Printf("- Temperature: %s\n", s.Temperature)
-	fmt.Printf("- Humidity: %s\n", s.Humidity)
-	fmt.Printf("- Pressure: %s\n", s.Pressure)
 }
 
 // Returns text message for telegram bot
@@ -229,25 +220,25 @@ func ComposeTgMessage() string {
 	var cacheData interface{}
 	var data SensorData
 
+	// Use cache if not empty
+	// If cache is empty the make HTTP call and set cache
 	cacheData, _ = c.Get("sensorData")
 	if cacheData != nil {
-		data = cacheData.(SensorData) // Use cache if not empty
-		return data.PrintTg()
+		data = cacheData.(SensorData)
 	} else {
-		data.Init(makeAPICall())                   // If cache is empty the make HTTP call
-		c.Set("sensorData", data, CacheExpiration) // Set cache
-		return data.PrintTg()
+		data.Init(makeAPICall())
+		c.Set("sensorData", data, CacheExpiration)
 	}
+
+	return data.PrintTg()
 }
 
 func main() {
-
 	// Create new bot entity
 	b, err := tb.NewBot(tb.Settings{
 		Token:  os.Getenv("PURPLEAIR_BOT_TOKEN"),
 		Poller: &tb.LongPoller{Timeout: 10 * time.Second},
 	})
-
 	if err != nil {
 		log.Fatal(err)
 		return
@@ -261,7 +252,10 @@ func main() {
 	)
 
 	// Add send options:
-	options := &tb.SendOptions{ParseMode: "Markdown", ReplyMarkup: menu}
+	options := &tb.SendOptions{
+		ParseMode:   "Markdown",
+		ReplyMarkup: menu,
+	}
 
 	// Handle /start command
 	b.Handle("/start", func(m *tb.Message) {
