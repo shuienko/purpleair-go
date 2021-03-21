@@ -5,11 +5,45 @@ import (
 	"fmt"
 	"github.com/mrflynn/go-aqi"
 	"io/ioutil"
+	"log"
 	"net/http"
-	"os"
+	"strconv"
 )
 
-const API_BASE_URL = "https://www.purpleair.com/json?show="
+const (
+	ApiBaseURL = "https://www.purpleair.com/json?show="
+	SensorID   = "49489"
+)
+
+type SensorData struct {
+	AQI         float64
+	AQIName     string
+	Temperature string
+	Humidity    string
+	Pressure    string
+	Uptime      string
+}
+
+func (s *SensorData) Init(api ApiResponse) {
+	// Get 'normal' stats from ApiResponse
+	stats := getStats(api)
+
+	// Set all values
+	s.AQI, s.AQIName = calcAQI(stats)
+	s.Temperature = FtoC(api.Results[0].TempF)
+	s.Humidity = api.Results[0].Humidity
+	s.Pressure = api.Results[0].Pressure
+	s.Uptime = api.Results[0].Uptime
+}
+
+// Prints out Sensor Data
+func (s *SensorData) Print() {
+	fmt.Printf("Purple Air Sensor #%s data:\n", SensorID)
+	fmt.Printf("- AQI: %.0f (%s)\n", s.AQI, s.AQIName)
+	fmt.Printf("- Temperature: %s\n", s.Temperature)
+	fmt.Printf("- Humidity: %s\n", s.Humidity)
+	fmt.Printf("- Pressure: %s\n", s.Pressure)
+}
 
 type Stats struct {
 	V                 float64 `json:"v"`
@@ -72,43 +106,70 @@ type ApiResponse struct {
 	} `json:"results"`
 }
 
-func getData(sensorID string) ApiResponse {
-	Response := ApiResponse{}
+// Makes actual HTTP call to 'ApiBaseURL' endpoint. Returns 'ApiResponse' object
+func makeAPICall() ApiResponse {
+	// Object for holding API response JSON
+	apiResponse := ApiResponse{}
 
-	url := API_BASE_URL + sensorID
+	url := ApiBaseURL + SensorID
 
-	resp, err := http.Get(url)
+	// Make HTTP call
+	response, err := http.Get(url)
 	if err != nil {
-		fmt.Println("Failure:", err)
-		return Response
+		log.Panic("Error while making HTTP Request:", err)
+		return apiResponse
 	}
 
-	// Read Response Body
-	respBody, _ := ioutil.ReadAll(resp.Body)
+	// Read HTTP response body
+	body, _ := ioutil.ReadAll(response.Body)
 
-	err = json.Unmarshal(respBody, &Response)
+	// Convert HTTP response to Go object.
+	err = json.Unmarshal(body, &apiResponse)
 	if err != nil {
-		fmt.Println("Failure:", err)
-		return Response
+		log.Fatal("Can't parse JSON from response body:", err)
+		return apiResponse
 	}
 
-	return Response
+	return apiResponse
+}
+
+// Converts 'Stats' field from input 'ApiResponse' object from string type to 'Stats' object type
+func getStats(a ApiResponse) Stats {
+	var statsJSON Stats
+	statsString := a.Results[0].Stats
+
+	err := json.Unmarshal([]byte(statsString), &statsJSON)
+	if err != nil {
+		log.Fatal("Can't convert Stats string to JSON:", err)
+	}
+
+	return statsJSON
+}
+
+// Calculate AQI index based ob PM2.5 value from 'Stats' object.
+// Output is: 'AQI index' and 'Index description'
+func calcAQI(s Stats) (float64, string) {
+	result, err := aqi.Calculate(aqi.PM25{Concentration: s.V1})
+	if err != nil {
+		log.Fatal("Can't calculate AQI based on PM2.5 value:", err)
+	}
+	return result.AQI, result.Index.Name
+}
+
+// Converts Fahrenheits to Celsius
+func FtoC(f string) string {
+	tempF, err := strconv.ParseFloat(f, 64)
+	if err != nil {
+		log.Fatal("Can't parse temperature:", err)
+	}
+
+	tempC := (tempF - 32) * 5 / 9
+
+	return fmt.Sprintf("%f", tempC)
 }
 
 func main() {
-	response := getData("49489")
-	stats := response.Results[0].Stats
-	var statsJSON Stats
-	err := json.Unmarshal([]byte(stats), &statsJSON)
-	if err != nil {
-		fmt.Println("Failure:", err)
-		os.Exit(1)
-	}
-
-	result, err := aqi.Calculate(aqi.PM25{statsJSON.V1})
-	if err != nil {
-		fmt.Println("Failure:", err)
-		os.Exit(1)
-	}
-	fmt.Printf("%.0f - %s\n", result.AQI, result.Index.Name)
+	var data SensorData
+	data.Init(makeAPICall())
+	data.Print()
 }
