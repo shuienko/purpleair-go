@@ -4,20 +4,25 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/mrflynn/go-aqi"
+	tb "gopkg.in/tucnak/telebot.v2"
 	"io/ioutil"
 	"log"
 	"net/http"
+	"os"
 	"strconv"
+	"time"
 )
 
 const (
 	ApiBaseURL = "https://www.purpleair.com/json?show="
 	SensorID   = "49489"
+	GetAQIText = "Якість повітря 😷"
 )
 
 type SensorData struct {
 	AQI         float64
 	AQIName     string
+	AQIColor    string
 	Temperature string
 	Humidity    string
 	Pressure    string
@@ -36,13 +41,21 @@ func (s *SensorData) Init(api ApiResponse) {
 	s.Uptime = api.Results[0].Uptime
 }
 
-// Prints out Sensor Data
-func (s *SensorData) Print() {
+// Prints out Sensor Data to CLI
+func (s *SensorData) PrintCli() {
 	fmt.Printf("Purple Air Sensor #%s data:\n", SensorID)
 	fmt.Printf("- AQI: %.0f (%s)\n", s.AQI, s.AQIName)
 	fmt.Printf("- Temperature: %s\n", s.Temperature)
 	fmt.Printf("- Humidity: %s\n", s.Humidity)
 	fmt.Printf("- Pressure: %s\n", s.Pressure)
+}
+
+// Returns text message for telegram bot
+func (s *SensorData) PrintTg() string {
+	return fmt.Sprintf(
+		"%s:\n"+
+			"PM2.5 AQI: *%.0f* | %s\n", genOutputPhrase(time.Now().Unix()), s.AQI, s.AQIName,
+	)
 }
 
 type Stats struct {
@@ -153,7 +166,43 @@ func calcAQI(s Stats) (float64, string) {
 	if err != nil {
 		log.Fatal("Can't calculate AQI based on PM2.5 value:", err)
 	}
-	return result.AQI, result.Index.Name
+
+	var AQIDesc string
+	switch result.Index.Name {
+	case "Good":
+		AQIDesc = "Добре 🟢"
+	case "Moderate":
+		AQIDesc = "Прийнятно ⚪️"
+	case "Sensitive":
+		AQIDesc = "Ризик для людей з респіраторними хворобами 🟡"
+	case "Unhealthy":
+		AQIDesc = "Погано 🟠"
+	case "VeryUnhealthy":
+		AQIDesc = "Дуже Погано 🟠"
+	case "Hazardous":
+		AQIDesc = "Небезпечно 🔴"
+	case "VeryHazardous":
+		AQIDesc = "Дуже небезпечно 🔴🔴🔴"
+	}
+	return result.AQI, AQIDesc
+}
+
+// Generates "random" phrase. Just for fun
+func genOutputPhrase(seed int64) string {
+	n := seed % 5
+	switch n {
+	case 0:
+		return "Ось що маємо зараз"
+	case 1:
+		return "Наразі якість повітря така"
+	case 2:
+		return "Повітря у Петропавлівській Борщагівці"
+	case 3:
+		return "Дані із датчика"
+	case 4:
+		return "Зараз із повітрям маємо"
+	}
+	return "Якість повітря"
 }
 
 // Converts Fahrenheits to Celsius
@@ -170,6 +219,45 @@ func FtoC(f string) string {
 
 func main() {
 	var data SensorData
-	data.Init(makeAPICall())
-	data.Print()
+
+	// Create new bot entity
+	b, err := tb.NewBot(tb.Settings{
+		Token:  os.Getenv("PURPLEAIR_BOT_TOKEN"),
+		Poller: &tb.LongPoller{Timeout: 10 * time.Second},
+	})
+
+	if err != nil {
+		log.Fatal(err)
+		return
+	}
+
+	// Set Reply keyboard
+	menu := &tb.ReplyMarkup{ResizeReplyKeyboard: true}
+	btnGetAQI := menu.Text(GetAQIText)
+	menu.Reply(
+		menu.Row(btnGetAQI),
+	)
+
+	// Add send options:
+	options := &tb.SendOptions{ParseMode: "Markdown", ReplyMarkup: menu}
+
+	// Handle /start command
+	b.Handle("/start", func(m *tb.Message) {
+		data.Init(makeAPICall())
+		_, err = b.Send(m.Sender, data.PrintTg(), options)
+		if err != nil {
+			log.Println(err)
+		}
+	})
+
+	// Handle button
+	b.Handle(&btnGetAQI, func(m *tb.Message) {
+		data.Init(makeAPICall())
+		_, err = b.Send(m.Sender, data.PrintTg(), options)
+		if err != nil {
+			log.Println(err)
+		}
+	})
+
+	b.Start()
 }
