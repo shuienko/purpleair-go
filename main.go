@@ -232,11 +232,9 @@ func ComposeTgMessage() string {
 	cacheData, _ = c.Get("sensorData")
 	if cacheData != nil {
 		data = cacheData.(SensorData) // Use cache if not empty
-		fmt.Println("Using cache")
 		return data.PrintTg()
 	} else {
-		data.Init(makeAPICall()) // If cache is empty the make HTTP call
-		fmt.Println("Making HTTP call")
+		data.Init(makeAPICall())                   // If cache is empty the make HTTP call
 		c.Set("sensorData", data, CacheExpiration) // Set cache
 		return data.PrintTg()
 	}
