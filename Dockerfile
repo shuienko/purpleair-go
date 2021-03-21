@@ -1,4 +1,5 @@
 FROM golang:1.15
+LABEL maintainer="oleksandr.shuienko@gmail.com"
 
 WORKDIR /go/src/purpleair-go
 COPY . .
