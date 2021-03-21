@@ -1,6 +1,6 @@
 module github.com/shuienko/purpleair-go
 
-go 1.16
+go 1.15
 
 require (
 	github.com/mrflynn/go-aqi v0.0.9
