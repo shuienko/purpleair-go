@@ -3,32 +3,31 @@ package main
 import (
 	"encoding/json"
 	"fmt"
-	"github.com/mrflynn/go-aqi"
-	"github.com/patrickmn/go-cache"
-	tb "gopkg.in/tucnak/telebot.v2"
 	"io/ioutil"
 	"log"
 	"net/http"
 	"os"
 	"strconv"
 	"time"
+
+	"github.com/mrflynn/go-aqi"
+	"github.com/patrickmn/go-cache"
+	tb "gopkg.in/tucnak/telebot.v2"
 )
 
 const (
 	ApiBaseURL      = "https://www.purpleair.com/json?show="
-	SensorID        = "49489"
-	GetAQIText      = "Якість повітря 😷"
+	GetAQIText      = "AQI Індекс 🔄"
 	CacheExpiration = time.Minute * 2
 	CacheCleanup    = CacheExpiration * 10
 )
 
-var (
-	c = cache.New(CacheExpiration, CacheCleanup)
-)
+var c *cache.Cache
+var BotToken, SensorID string
 
 type SensorData struct {
 	AQI         float64
-	AQIName     string
+	AQIDesc     string
 	AQIColor    string
 	Temperature string
 	Humidity    string
@@ -36,24 +35,46 @@ type SensorData struct {
 	Uptime      string
 }
 
-func (s *SensorData) Init(api ApiResponse) {
+// Initialize SensorData based on API response
+func (s *SensorData) New(api ApiResponse) {
 	// Get 'normal' stats from ApiResponse
 	stats := getStats(api)
 
 	// Set all values
-	s.AQI, s.AQIName = calcAQI(stats)
+	s.AQI = calcAQI(stats)
 	s.Temperature = FtoC(api.Results[0].TempF)
 	s.Humidity = api.Results[0].Humidity
 	s.Pressure = api.Results[0].Pressure
 	s.Uptime = api.Results[0].Uptime
+
+	switch {
+	case s.AQI >= 0 && s.AQI <= 50:
+		s.AQIColor = "🟢"
+		s.AQIDesc = "Добре"
+	case s.AQI >= 51 && s.AQI <= 100:
+		s.AQIColor = "⚪️"
+		s.AQIDesc = "Прийнятно"
+	case s.AQI >= 101 && s.AQI <= 150:
+		s.AQIColor = "🟡"
+		s.AQIDesc = "Ризик для людей з респіраторними хворобами"
+	case s.AQI >= 151 && s.AQI <= 200:
+		s.AQIColor = "🟠"
+		s.AQIDesc = "Погано"
+	case s.AQI >= 201 && s.AQI <= 300:
+		s.AQIColor = "🟠"
+		s.AQIDesc = "Дуже погано"
+	case s.AQI >= 301 && s.AQI <= 400:
+		s.AQIColor = "🔴"
+		s.AQIDesc = "Небезпечно"
+	case s.AQI >= 401 && s.AQI <= 500:
+		s.AQIColor = "🆘"
+		s.AQIDesc = "Дуже Неьезпечно"
+	}
 }
 
-// Returns text message for telegram bot
-func (s *SensorData) PrintTg() string {
-	return fmt.Sprintf(
-		"%s:\n"+
-			"PM2.5 AQI: *%.0f* | %s\n", genOutputPhrase(time.Now().Unix()), s.AQI, s.AQIName,
-	)
+// Returns text message for telegram bot with AQI info
+func (s *SensorData) AqiInfo() string {
+	return fmt.Sprintf("%s *%.0f* | %s\n", s.AQIColor, s.AQI, s.AQIDesc)
 }
 
 type Stats struct {
@@ -112,7 +133,7 @@ type ApiResponse struct {
 		TempF                        string  `json:"temp_f,omitempty"`
 		Pressure                     string  `json:"pressure,omitempty"`
 		AGE                          int     `json:"AGE"`
-		Stats                        string  `json:"Stats,omitempty"`
+		Stats                        string  `json:"Stats,omitempty"` // Stats object
 		ParentID                     int     `json:"ParentID,omitempty"`
 	} `json:"results"`
 }
@@ -127,17 +148,20 @@ func makeAPICall() ApiResponse {
 	// Make HTTP call
 	response, err := http.Get(url)
 	if err != nil {
-		log.Panic("Error while making HTTP Request:", err)
+		log.Println("Error while making HTTP Request:", err)
 		return apiResponse
 	}
 
 	// Read HTTP response body
-	body, _ := ioutil.ReadAll(response.Body)
+	body, err := ioutil.ReadAll(response.Body)
+	if err != nil {
+		log.Println("Can't read from response body:", err)
+	}
 
 	// Convert HTTP response to Go object.
 	err = json.Unmarshal(body, &apiResponse)
 	if err != nil {
-		log.Fatal("Can't parse JSON from response body:", err)
+		log.Println("Can't parse JSON from response body:", err)
 		return apiResponse
 	}
 
@@ -151,63 +175,27 @@ func getStats(a ApiResponse) Stats {
 
 	err := json.Unmarshal([]byte(statsString), &statsJSON)
 	if err != nil {
-		log.Fatal("Can't convert Stats string to JSON:", err)
+		log.Println("Can't convert Stats string to JSON:", err)
 	}
 
 	return statsJSON
 }
 
 // Calculate AQI index based ob PM2.5 value from 'Stats' object.
-// Output is: 'AQI index' and 'Index description'
-func calcAQI(s Stats) (float64, string) {
+func calcAQI(s Stats) float64 {
 	result, err := aqi.Calculate(aqi.PM25{Concentration: s.V1})
 	if err != nil {
-		log.Fatal("Can't calculate AQI based on PM2.5 value:", err)
+		log.Println("Can't calculate AQI based on PM2.5 value:", err)
 	}
 
-	var AQIDesc string
-	switch result.Index.Name {
-	case "Good":
-		AQIDesc = "Добре 🟢"
-	case "Moderate":
-		AQIDesc = "Прийнятно ⚪️"
-	case "Sensitive":
-		AQIDesc = "Ризик для людей з респіраторними хворобами 🟡"
-	case "Unhealthy":
-		AQIDesc = "Погано 🟠"
-	case "VeryUnhealthy":
-		AQIDesc = "Дуже Погано 🟠"
-	case "Hazardous":
-		AQIDesc = "Небезпечно 🔴"
-	case "VeryHazardous":
-		AQIDesc = "Дуже небезпечно 🔴🔴🔴"
-	}
-	return result.AQI, AQIDesc
-}
-
-// Generates "random" phrase. Just for fun
-func genOutputPhrase(seed int64) string {
-	n := seed % 5
-	switch n {
-	case 0:
-		return "Ось що маємо зараз"
-	case 1:
-		return "Наразі якість повітря така"
-	case 2:
-		return "Повітря у Петропавлівській Борщагівці"
-	case 3:
-		return "Дані із датчика"
-	case 4:
-		return "Зараз із повітрям маємо"
-	}
-	return "Якість повітря"
+	return result.AQI
 }
 
 // Converts Fahrenheits to Celsius
 func FtoC(f string) string {
 	tempF, err := strconv.ParseFloat(f, 64)
 	if err != nil {
-		log.Fatal("Can't parse temperature:", err)
+		log.Println("Can't parse temperature:", err)
 	}
 
 	tempC := (tempF - 32) * 5 / 9
@@ -216,7 +204,7 @@ func FtoC(f string) string {
 }
 
 // Compose response message using cache
-func ComposeTgMessage() string {
+func GetSensorData() string {
 	var cacheData interface{}
 	var data SensorData
 
@@ -226,21 +214,37 @@ func ComposeTgMessage() string {
 	if cacheData != nil {
 		data = cacheData.(SensorData)
 	} else {
-		data.Init(makeAPICall())
+		data.New(makeAPICall())
 		c.Set("sensorData", data, CacheExpiration)
 	}
 
-	return data.PrintTg()
+	return data.AqiInfo()
+}
+
+// ##### INIT #####
+func init() {
+	// Create Cache
+	c = cache.New(CacheExpiration, CacheCleanup)
+
+	// Get environment variables and check errors
+	BotToken = os.Getenv("PURPLEAIR_BOT_TOKEN")
+	if len(BotToken) == 0 {
+		log.Fatal("PURPLEAIR_BOT_TOKEN environment variable is not set. Exit.")
+	}
+	SensorID = os.Getenv("PURPLEAIR_BOT_SENSOR_ID")
+	if len(SensorID) == 0 {
+		log.Fatal("PURPLEAIR_BOT_SENSOR_ID environment variable is not set. Exit.")
+	}
 }
 
 func main() {
 	// Create new bot entity
 	b, err := tb.NewBot(tb.Settings{
-		Token:  os.Getenv("PURPLEAIR_BOT_TOKEN"),
+		Token:  BotToken,
 		Poller: &tb.LongPoller{Timeout: 10 * time.Second},
 	})
 	if err != nil {
-		log.Fatal(err)
+		log.Fatal("Can't create new bot object:", err)
 		return
 	}
 
@@ -251,7 +255,7 @@ func main() {
 		menu.Row(btnGetAQI),
 	)
 
-	// Add send options:
+	// Add send options
 	options := &tb.SendOptions{
 		ParseMode:   "Markdown",
 		ReplyMarkup: menu,
@@ -259,17 +263,17 @@ func main() {
 
 	// Handle /start command
 	b.Handle("/start", func(m *tb.Message) {
-		_, err = b.Send(m.Sender, ComposeTgMessage(), options)
+		_, err = b.Send(m.Sender, GetSensorData(), options)
 		if err != nil {
-			log.Println(err)
+			log.Println("Failed to respond on /start command:", err)
 		}
 	})
 
 	// Handle button
 	b.Handle(&btnGetAQI, func(m *tb.Message) {
-		_, err = b.Send(m.Sender, ComposeTgMessage(), options)
+		_, err = b.Send(m.Sender, GetSensorData(), options)
 		if err != nil {
-			log.Println(err)
+			log.Println("Failed to respond on btnGetAQI:", err)
 		}
 	})
 
