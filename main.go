@@ -68,7 +68,7 @@ func (s *SensorData) New(api ApiResponse) {
 		s.AQIDesc = "Небезпечно"
 	case s.AQI >= 401 && s.AQI <= 500:
 		s.AQIColor = "🆘"
-		s.AQIDesc = "Дуже Неьезпечно"
+		s.AQIDesc = "ДУЖЕ НЕБЕЗПЕЧНО"
 	}
 }
 
